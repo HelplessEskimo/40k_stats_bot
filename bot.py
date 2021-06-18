@@ -1,6 +1,14 @@
 import discord
 
 client = discord.Client()
+token = ""
+
+
+def read_token():
+    with open("token.txt", "w") as f:
+        token = f.read()
+    return token
+
 
 unit_dict = {
     "Primaris Lieutenant": {
@@ -41,4 +49,4 @@ def unit_dict_lookup(unit):
     return found_unit
 
 
-client.run('ODU1NDUzNjczNDA4MTY3OTQ2.YMytUQ.MVTN6U5hkaPSwWe11VN96JRIJRY')
+client.run(read_token())
