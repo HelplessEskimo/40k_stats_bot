@@ -1,5 +1,7 @@
 import discord
 import random
+import csv
+import textdistance
 
 client = discord.Client()
 token = ""
@@ -10,18 +12,22 @@ def read_token():
         token = f.read()
     return token
 
+index_dict = {}
+unit_dict = {}
 
-unit_dict = {
-    "Primaris Lieutenant": {
-        "Ws": "3+",
-        "Bs": "3+",
-        "Sv": "3+"
-    }
-}
+wargear_index_dict = {}
+wargear_dict = {}
+
+# for autocorrect, list of unique words across all entries
+faction_word_list = []
+unit_word_list = []
+wargear_word_list = []
 
 
 @client.event
 async def on_ready():
+    create_unit_dict()
+    create_wargear_dict()
     print('We have logged in as {0.user}'.format(client))
 
 
@@ -34,11 +40,168 @@ async def on_message(message):
         processed = process_msg(message.content[6:])
         if not processed:
             await message.channel.send("Failed to process message")
-        
+            return
         output_msg = ""
         for num_dead, prob in enumerate(processed):
             output_msg += "{} dead: {:.2f}%\n".format(num_dead, prob)
         await message.channel.send(output_msg)
+
+def create_unit_dict():
+    """
+    Creates a dictionary entry for every unit using Wahapedia .csv files.
+    Requires: Factions.csv, Datasheets.csv, Datasheets_models.csv, Datasheets_damage.csv
+
+    The created dictionary unit_dict is organised following this format:
+    {faction_id: {unit_name: {unit stats}}}
+
+    There is a second dictionary called index_dict for matching faction names to 
+    faction_id. {faction_name: faction_id}
+    """
+    faction_data = []
+    datasheet_data = []
+    datasheet_model_data = []
+    damage_rows = {}
+
+    with open('Factions.csv', 'r', encoding='utf-8', newline='') as csv_file:
+        csv_reader = csv.reader(csv_file, delimiter='|')
+        for row in csv_reader:
+            info = {}
+            info['faction_id'], info['faction_name'], info['weblink'], _ = row
+            faction_data.append(info)
+        
+        faction_data = faction_data[1:]
+
+    with open('Datasheets.csv', 'r', encoding='utf-8', newline='') as csv_file:
+        csv_reader = csv.reader(csv_file, delimiter='|')
+        
+        for row in csv_reader:
+            info = {}
+            info['datasheet_id'] = row[0]      # string: Datasheet identifier. Used to link to other tables
+            info['name'] = row[1]              # string: Datasheet name
+            info['link'] = row[2]              # string: Link to datasheet on the Wahapedia website
+            info['faction_id'] = row[3]        # string: Faction ID (link to Factions.csv table)
+            info['source_id'] = row[4]         # string: Add-on ID (link to Source.csv table)
+            info['role'] = row[5]              # string: Datasheet’s Battlefield Role
+            info['unit_composition'] = row[6]  # string: Unit composition and equipment
+            info['transport'] = row[7]         # string: Transport capacity (if it is a TRANSPORT)
+            info['power_points'] = row[8]      # string: Power Point unit cost
+            info['priest'] = row[9]            # string: Description of the priest's capabilities (if it is a PRIEST)
+            info['psyker'] = row[10]           # string: Description of the psykers's capabilities (if it is a PSYKER)
+            info['open_play_only'] = row[11]   # bool:   The datasheet is intended for the Open Play game only
+            info['virtual'] = row[12]          # string: Virtual datasheets not present in army list but can be summoned in some cases (eg Chaos Spawn)
+            info['cost_per_unit'] = row[13]    # bool:   Cost includes all models
+            info['cost'] = row[14]             # string: Unit points cost (for units without models or units with one price for all models - see cost_per_unit above)
+            datasheet_data.append(info)
+        datasheet_data = datasheet_data[1:]
+        
+    with open('Datasheets_models.csv', 'r', encoding='utf-8', newline='') as csv_file:
+        csv_reader = csv.reader(csv_file, delimiter='|')
+        
+        for row in csv_reader:
+            info = {}
+            info['datasheet_id'] = row[0]
+            info['line'] = row[1]
+            info['name'] = row[2]
+            info['M'] = row[3]
+            info['WS'] = row[4]
+            info['BS'] = row[5]
+            info['S'] = row[6]
+            info['T'] = row[7]
+            info['W'] = row[8]
+            info['A'] = row[9]
+            info['Ld'] = row[10]
+            info['Sv'] = row[11]
+            info['cost'] = row[12]
+            info['cost_description'] = row[13]
+            info['models_per_unit'] = row[14]
+            info['cost_including_wargear'] = row[15]
+            datasheet_model_data.append(info)
+        datasheet_model_data = datasheet_model_data[1:]
+
+    with open('Datasheets_damage.csv', 'r', encoding='utf-8', newline='') as csv_file:
+        csv_reader = csv.reader(csv_file, delimiter='|')
+        
+        for row in csv_reader:
+            if row[0] not in damage_rows:
+                damage_rows[row[0]] = [row[1:]]
+            else:
+                damage_rows[row[0]].append(row[1:])
+
+    for faction in faction_data:
+        index_dict["{}".format(faction['faction_name'])] =  faction['faction_id']
+
+    for faction_id in index_dict:
+        unit_dict[index_dict[faction_id]]= {}
+
+    for datasheet in datasheet_data:
+        for datasheet_stats in datasheet_model_data:
+            if datasheet['datasheet_id'] == datasheet_stats['datasheet_id']:
+                unit_dict[datasheet["faction_id"]][datasheet["name"]] = datasheet_stats
+
+                # for multiwound models, this replaces the variable entries with their top profile stats
+                if datasheet['datasheet_id'] in damage_rows:
+                    for i, stat in enumerate(damage_rows[datasheet['datasheet_id']][0][2:]):
+                        if stat != '':
+                            unit_dict[datasheet["faction_id"]][datasheet["name"]][stat] = damage_rows[datasheet['datasheet_id']][1][i+2]
+    
+    global faction_word_list
+    global unit_word_list
+    
+    faction_word_list = list(set(sum([i.split() for i in index_dict.keys()], [])))
+    for faction in unit_dict:
+        unit_word_list += sum([i.split() for i in unit_dict[faction].keys()], [])
+    unit_word_list = list(set(unit_word_list))
+
+
+def create_wargear_dict():
+    """
+    Creates a dictionary entry for every Weapon using Wahapedia .csv files.
+    Requires: Wargear.csv, Wargear_list.csv
+
+    The created dictionary unit_dict is organised following this format:
+    {weapon_id: {"weapon_name": xxx, "stats": [{"name": profile 1 name,  stats...}]}}
+
+    The list contains an entry with all stats for each weeapon profile, along with the name of that profile
+
+    There is a second dictionary called wargear_index_dict for matching weapon names to 
+    weapon_id. {weapon_name: weapon_id}
+    """
+    with open('Wargear.csv', 'r', encoding='utf-8', newline='') as csv_file:
+        csv_reader = csv.reader(csv_file, delimiter='|')
+        for row in csv_reader:
+            if row[1] not in wargear_dict and row[1] != 'name':
+                wargear_dict[row[0]] = {"name": row[1], "stats": [{}]}
+                wargear_index_dict[row[1]] = row[0]
+                
+    with open('Wargear_list.csv', 'r', encoding='utf-8', newline='') as csv_file:
+        csv_reader = csv.reader(csv_file, delimiter='|')
+        for row in list(csv_reader)[1:]:
+            if row[1] == '':
+                continue
+            while int(row[1]) > len(wargear_dict[row[0]]["stats"]):
+                wargear_dict[row[0]]["stats"].append({})
+            wargear_dict[row[0]]["stats"][int(row[1]) - 1]["name"] = row[2]
+            wargear_dict[row[0]]["stats"][int(row[1]) - 1]["Range"] = row[3]
+            wargear_dict[row[0]]["stats"][int(row[1]) - 1]["type"] = row[4]
+            wargear_dict[row[0]]["stats"][int(row[1]) - 1]["S"] = row[5]
+            wargear_dict[row[0]]["stats"][int(row[1]) - 1]["AP"] = row[6]
+            wargear_dict[row[0]]["stats"][int(row[1]) - 1]["D"] = row[7]
+            wargear_dict[row[0]]["stats"][int(row[1]) - 1]["blast"] = ('Blast' in row[8])
+            wargear_dict[row[0]]["stats"][int(row[1]) - 1]["auto-hit"] = ('automatically hits' in row[8])
+
+    global wargear_word_list
+    wargear_word_list = list(set(sum([i.split() for i in wargear_index_dict.keys()], [])))
+
+
+def autocorrect(word, word_list):
+    if word in word_list:
+        return word
+    else:
+        similarities = [(v, 1-(textdistance.Jaccard(qval=2).distance(v,word))) for v in word_list]
+        similarities.sort(key=lambda tup: tup[1], reverse = True)
+
+    return similarities[0][0]
+
 
 def generate_attacks(num_attacks, target_data, weapon_data):
     """ 
@@ -77,9 +240,11 @@ def generate_hits(attacker_data, target_data, weapon_data, num_attacks):
         to_hit = attacker_data['WS']
     else:
         to_hit = attacker_data['BS']
-    
-    if target_data['-1 to hit']:
-        to_hit += 1
+        
+    if to_hit[0] == '-':
+        to_hit = 7
+    else:
+        to_hit = int(to_hit[0])
     
     for i in range(num_attacks):
         if random.randint(1, 6) >= to_hit:
@@ -93,10 +258,13 @@ def generate_wounds(attacker_data, target_data, weapon_data, num_hits):
     For the number of successful hits, roll a wound roll for each, after calculating 
     the number required to wound with the weapon.
     """
-    T = target_data['T']
+    T = int(target_data['T'])
     
     # calculate strength of weapon if it is based on attacking model strength
-    S = attacker_data['S']
+    if attacker_data['S'].isnumeric():
+        S = int(attacker_data['S'])
+    else:
+        S = 0
     S_mod = weapon_data['S']
     if S_mod[0] == 'x':
         S *= int(S_mod[1])
@@ -133,8 +301,8 @@ def generate_saves(attacker_data, target_data, weapon_data, num_wounds):
     For the number of successful wounds, roll a save for each, using either Armor Save or
     Invul Save if there is one, factoring AP into the Armor Save
     """
-    to_save = target_data['Sv'] + weapon_data['AP'] # AP is saved as a positive interger
-    if target_data['invul'] is not None:
+    to_save = int(target_data['Sv'][0]) + int(weapon_data['AP'][-1]) 
+    if 'invul' in target_data and target_data['invul'] is not None:
         to_save = min(to_save, target_data['invul'])
         
     num_unsaved_wounds = 0
@@ -152,6 +320,11 @@ def generate_dead(attacker_data, target_data, weapon_data, num_wounds):
     cur_damage = 0 # wounds taken by current model taking damage
     num_dead = 0   # total number of dead models from attack sequence
     
+    if target_data['W'].isnumeric():
+        target_wounds = int(target_data['W'])
+    else:
+        target_wounds = int(target_data['W'].split('-')[-1])
+
     for i in range(num_wounds):
         if str(weapon_data['D']).isnumeric():
             cur_damage += int(weapon_data['D'])
@@ -164,7 +337,7 @@ def generate_dead(attacker_data, target_data, weapon_data, num_wounds):
             else:
                 num_dice = int(num_dice)
             cur_damage += sum([random.randint(1, dice_size) for i in range(num_dice)])
-        if cur_damage >= target_data['W']:
+        if cur_damage >= target_wounds:
             cur_damage = 0
             num_dead += 1
     
@@ -174,6 +347,7 @@ def generate_dead(attacker_data, target_data, weapon_data, num_wounds):
         num_dead = min(num_dead, target_data['number'])
         
     return num_dead
+
 
 def parse_modifiers(string):
     """
@@ -192,30 +366,29 @@ def parse_modifiers(string):
     # this can probably be replaced with a "match", but I haven't updated to 3.10 yet
     for mod in modifiers:
         if mod[:2] == 'WS':
-            modifier_dict['WS'] = int(mod[2])
+            modifier_dict['WS'] = mod[2:]
         elif mod[:2] == 'BS':
-            modifier_dict['BS'] = int(mod[2])
-        elif mod[:2] == 'BS':
-            modifier_dict['BS'] = int(mod[2])
+            modifier_dict['BS'] = mod[2:]
         elif len(mod) > 3 and mod[-3:] == '+++':
-            modifier_dict['FNP'] = int(mod[0])
+            modifier_dict['FNP'] = mod
         elif len(mod) > 2 and mod[-2:] == '++':
-            modifier_dict['invul'] = int(mod[0])
+            modifier_dict['invul'] = mod
         elif len(mod) == 2 and mod[1] == '+':
-            modifier_dict['Sv'] = int(mod[0])
+            modifier_dict['Sv'] = mod
         elif mod[0] == 'S': 
             modifier_dict['S'] = mod[1:]
         elif mod[0] == 'T': 
-            modifier_dict['T'] = int(mod[1:])
+            modifier_dict['T'] = mod[1:]
         elif mod[0] == 'W': 
-            modifier_dict['W'] = int(mod[1:])
+            modifier_dict['W'] = mod[1:]
         elif mod[:2] == 'AP':
-            modifier_dict['AP'] = int(mod[-1])
+            modifier_dict['AP'] = mod[2:]
         elif mod[0] == 'D': 
             modifier_dict['D'] = mod[1:]
     
     return modifier_dict
     
+
 def retrieve_datasheet(unit):
     """
     Retrieve a datasheet statline from the dictionary containing all datasheets, created from csv.
@@ -224,15 +397,36 @@ def retrieve_datasheet(unit):
     modifiers = []
     if '[' in unit and ']' in unit:
         modifiers = parse_modifiers(unit)
-        
-    # retrieve datasheet from dictionary created from csv
-    data = {'WS': 3, 'BS': 3, 'S': 4, 'T': 4, 'W': 1, 'Sv': 4, 'invul': None, 'FNP': None, '-1 to hit': False}
+    
+    unit_string = unit.split(']')[-1]
+    unit_words = unit_string.split()
+    
+    faction_keyword = None
+    unit_name = None
+    
+    corrected_faction_words = [autocorrect(i, faction_word_list) for i in unit_words]
+    print(corrected_faction_words)
+    for i in range(len(corrected_faction_words)):
+        if ' '.join(corrected_faction_words[:(i+1)]) in index_dict:
+            faction_keyword = index_dict[' '.join(corrected_faction_words[:(i+1)])]
+    if faction_keyword is None:
+        print("Could not identify Faction")
+        return False
+    
+    corrected_unit_words = [autocorrect(i, unit_word_list) for i in unit_words]
+    for i in range(len(corrected_unit_words)):
+        if ' '.join(corrected_unit_words[-(i+1):]) in unit_dict[faction_keyword]:
+            unit_name = ' '.join(corrected_unit_words[-(i+1):])
+    if unit_name is None:
+        print("Could not identify Unit Name")
+        return False
+    
+    data = unit_dict[faction_keyword][unit_name].copy()
     
     for mod in modifiers:
         if mod in data and modifiers[mod] is not None:
             data[mod] = modifiers[mod]
-            
-    print(data)
+    
     return data
 
 def retrieve_weapon(weapon):
@@ -244,15 +438,25 @@ def retrieve_weapon(weapon):
     if '[' in weapon and ']' in weapon:
         modifiers = parse_modifiers(weapon)
     
-    # retrieve datasheet from dictionary created from csv
-    # Strength has to be a string, due to some weapons using attacker's Strenght modified in some way
-    data = {'type': "Heavy 3", 'S': '4', 'AP': 0, 'D': 1, 'blast': False, 'auto-hit': False}
+    weapon_string = weapon.split(']')[-1]
+    weapon_words = weapon_string.split()
     
+    weapon_id = None
+
+    corrected_weapon_words = [autocorrect(i, wargear_word_list) for i in weapon_words]
+    for i in range(len(corrected_weapon_words)):
+        if ' '.join(corrected_weapon_words[:(i+1)]) in wargear_index_dict:
+            weapon_id = wargear_index_dict[' '.join(corrected_weapon_words[:(i+1)])]
+    if weapon_id is None:
+        print("Could not identify weapon")
+        return False
+
+    data = wargear_dict[weapon_id]["stats"][0].copy()
+
     for mod in modifiers:
         if mod in data and modifiers[mod] is not None:
             data[mod] = modifiers[mod]
             
-    print(data)
     return data
 
 
@@ -290,6 +494,13 @@ def process_msg(msg):
     target_data = retrieve_datasheet(target_unit.strip())
     weapon_data = retrieve_weapon(weapon.strip())
     
+    if not attacker_data:
+        return False
+    if not target_data:
+        return False
+    if not weapon_data:
+        return False
+
     target_data['number'] = num_target
     
     # prepare array to store number of dead target models for each generated attack sequence
@@ -318,11 +529,5 @@ def process_msg(msg):
         dead[i] /= num_trials
         dead[i] *= 100
     return dead
-
-
-def unit_dict_lookup(unit):
-    found_unit = unit_dict[unit]
-    return found_unit
-
 
 client.run(read_token())
