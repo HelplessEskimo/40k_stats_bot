@@ -353,12 +353,16 @@ def generate_dead(attacker_data, target_data, weapon_data, num_wounds):
         else:
             # damage is based on dice
             num_dice, dice_size = weapon_data['D'].split('D')
+            if "+" in dice_size:
+                dice_size, additional_damage = dice_size.split('+')
             dice_size = int(dice_size)
             if num_dice == '':
                 num_dice = 1
             else:
                 num_dice = int(num_dice)
             cur_damage += sum([random.randint(1, dice_size) for i in range(num_dice)])
+            if additional_damage:
+                cur_damage + int(additional_damage)
         if cur_damage >= target_wounds:
             cur_damage = 0
             num_dead += 1
