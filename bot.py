@@ -66,7 +66,11 @@ async def on_message(message):
         for num_dead, prob in enumerate(processed):
             output_msg += "{} dead: {:.2f}%\n".format(num_dead, prob)
         await message.channel.send(output_msg)
-
+    elif message.content.startswith('$help'):
+        if "$unit" in message.content:
+            await message.channel.send("helpy help help")
+        else:
+            await message.channel.send("specify which command you need help for: \n $unit")
 
 def create_unit_dict():
     """
@@ -159,6 +163,8 @@ def create_unit_dict():
         for datasheet_stats in datasheet_model_data:
             if datasheet['datasheet_id'] == datasheet_stats['datasheet_id']:
                 unit_dict[datasheet["faction_id"]][datasheet["name"]] = datasheet_stats
+                unit_dict[datasheet["faction_id"]][datasheet["name"]]['invul'] = None
+                unit_dict[datasheet["faction_id"]][datasheet["name"]]['FNP'] = None
 
                 # for multiwound models, this replaces the variable entries with their top profile stats
                 if datasheet['datasheet_id'] in damage_rows:
@@ -325,7 +331,7 @@ def generate_saves(attacker_data, target_data, weapon_data, num_wounds):
     """
     to_save = int(target_data['Sv'][0]) + int(weapon_data['AP'][-1])
     if 'invul' in target_data and target_data['invul'] is not None:
-        to_save = min(to_save, target_data['invul'])
+        to_save = min(to_save, int(target_data['invul'][0]))
 
     num_unsaved_wounds = 0
     for i in range(num_wounds):
@@ -339,6 +345,7 @@ def generate_dead(attacker_data, target_data, weapon_data, num_wounds):
     From the number of unsaved wounds, generate damage for each, then return the number of models
     that die as a result.
     """
+    attack_damage = 0
     cur_damage = 0  # wounds taken by current model taking damage
     num_dead = 0    # total number of dead models from attack sequence
 
@@ -349,20 +356,31 @@ def generate_dead(attacker_data, target_data, weapon_data, num_wounds):
 
     for i in range(num_wounds):
         if str(weapon_data['D']).isnumeric():
-            cur_damage += int(weapon_data['D'])
+            attack_damage = int(weapon_data['D'])
         else:
             # damage is based on dice
             num_dice, dice_size = weapon_data['D'].split('D')
             if "+" in dice_size:
                 dice_size, additional_damage = dice_size.split('+')
+            else:
+                additional_damage = None
             dice_size = int(dice_size)
             if num_dice == '':
                 num_dice = 1
             else:
                 num_dice = int(num_dice)
-            cur_damage += sum([random.randint(1, dice_size) for i in range(num_dice)])
+            attack_damage = sum([random.randint(1, dice_size) for i in range(num_dice)])
             if additional_damage:
-                cur_damage + int(additional_damage)
+                attack_damage += int(additional_damage)
+
+        if target_data['FNP'] is not None:
+            for i in range(attack_damage):
+                if random.randint(1, 6) < int(target_data['FNP'][0]):
+                    cur_damage += 1
+        else:
+            cur_damage += attack_damage
+
+        attack_damage = 0
         if cur_damage >= target_wounds:
             cur_damage = 0
             num_dead += 1
